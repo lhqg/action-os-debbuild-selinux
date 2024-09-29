@@ -1,0 +1,188 @@
+name: 'Build SELinux module DEB package'
+description: 'Build DEB packaged SELinux modules on targeted OS'
+
+branding:
+  color:  green
+  icon: package
+
+inputs:
+  distro:
+    description: 'Name of the GNU/Linux distribution, i.e. `ubuntu` (default) or `debian`.'
+    required: false
+    default: 'ubuntu'
+  distro_vers:
+    description: 'Code name or release for the distribution, e.g. `noble` or `24.04`.'
+    required: true
+  platform:
+    description: 'Platform name, i.e. `amd64` (default) or `i386`.'
+    required: false
+    default: 'amd64'
+
+  source_repo_location:
+    description: 'Provides the directory where the source repository was checked out'
+    required: true
+    default: 'SOURCE_REPO'
+  build_material_dir:
+    description: 'Provides the relative path (in the source repository) where the Makefile and the control, changelog and copyright files are located.'
+    required: false
+    default: 'dpkg'
+  package_version:
+    description: 'Version of package to build.'
+    required: true
+  output_dir:
+    description: 'Provides the directory name where built packages should be placed.'
+    required: true
+    default: 'artifacts'
+  gpg_name:
+    description: 'GPG pretty name of the key'
+    required: true
+  gpg_private_key_file:
+    description: 'GPG key file'
+    required: true
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Verify inputs
+      shell: bash
+      run: |
+        if [ "${{inputs.distro}}" != "ubuntu" ] && [ "${{inputs.distro}}" != "debian" 
+        then
+          echo "::error::Distribution must be either debian or ubuntu."
+          exit 1
+        fi
+
+        echo '${{inpus.source_repo_location}}' | grep -i '^[a-z0-9_.-]+$'
+        if [ $? -ne 0 ]
+        then
+          echo "::error::Illegal character(s) detected in `source_repo_location`."
+          exit 1
+        fi
+
+        echo '${{inputs.build_material_dir}}' | grep -i '^[a-z0-9_.-]+$'
+        if [ $? -ne 0 ]
+        then
+          echo "::error::Illegal character(s) detected in `build_material_dir`."
+          exit 1
+        fi
+
+        echo '${{inputs.output_dir}}' | grep -i '^[a-z0-9_.-]+$'
+        if [ $? -ne 0 ]
+        then
+          echo "::error::Illegal character(s) detected in `output_dir`."
+          exit 1
+        fi
+
+    - name: Prepare package build workspace
+      shell: bash
+      run: |
+        SOURCE_DIR="$(readlink -f "${{inputs.source_repo_location}}")"
+
+        if [[ "$SOURCE_DIR" != "${{github.workspace}}"* ]]
+        then
+          echo "::error::`source_dir` (${INPUTS_SOURCE_DIR}) has to be a subdirectory of the current workdir!"
+          exit 2
+        fi
+
+        for package in ${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/*
+        do
+          SOURCE_PKG_DIR=${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/${package}
+          BUILDDIR=${{github.workspace}}/build/${package}-${INPUT_PKG_VERSION}
+
+          if [ -d "${SOURCE_PKG_DIR}" -a -f "${SOURCE_PKG_DIR}/control" ]
+          then
+            if [ -d "${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}" ]
+            then
+              if [ -f ${SOURCE_PKG_DIR}/Makefile ]
+              then
+                mkdir -m 0755 -p ${BUILDDIR}/debian ${{github.workspace}}/${INPUT_RESULT_DIR}
+
+                sed -e "s/%version%/${VERSION}/g" \
+                  -e "s/%name%/${package}/g" \
+                  -e "s:%sourcedir%:${SOURCE_DIR}:g" \
+                  -e "s:%builddir%:${BUILDDIR}:g" \
+                  ${SOURCE_PKG_DIR}/Makefile > ${BUILDDIR}/Makefile
+
+                sed -e "s/%version%/${VERSION}/g" \
+                  -e "s/%name%/${package}/g" \
+                  -e "s:%sourcedir%:${SOURCE_DIR}:g" \
+                  -e "s:%builddir%:${BUILDDIR}:g" \
+                  ${SOURCE_PKG_DIR}/control > ${BUILDDIR}/debian/control
+
+                for file in preinst postinst prerm postrm rules changelog
+                do
+                  if [ -f ${SOURCE_PKG_DIR}/$file ]
+                  then
+                    cp ${SOURCE_PKG_DIR}/$file ${BUILDDIR}/debian/
+                    chmod 0755  ${BUILDDIR}/debian/$(basename $file)
+                  fi
+                done
+              else
+                echo "::error::Makefile not found for package `${package}`."
+                exit 2
+              fi
+            else
+              echo "::error::`build_material_dir` does not exist in the source repository."
+              exit 2
+            fi
+          else
+            if [ -d "${SOURCE_PKG_DIR}" ]
+            then
+              echo "::notice::subdirectory ${package} ignored: no control file found."
+            fi
+          fi
+        done
+      working-directory: ${{github.workspace}}
+      env:
+        INPUT_BUILD_MATERIAL_DIR: "${{inputs.build_material_dir}}"
+        INPUT_PKG_VERSION: "${{inputs.package_version}}"
+        INPUT_RESULT_DIR: "${{inputs.result_dir}}"
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ vars.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v6
+      with:
+        push: false
+        tags: ${{ vars.DOCKERHUB_USERNAME }}/${{inputs.distro}}-${{inputs.distro_vers}}-${{inputs.platform}}:latest
+        cache-from: type=gha
+        cache-to: type=gha
+        outputs: type=docker
+        platforms: ${{inputs.platform}}
+        build-args: |
+          DIST=${{inputs.dist}}
+          DISTRIBUTION=${{inputs.flavor}}
+          PLATFORM=${{inputs.platform}}
+
+    - name: Build DEB package in docker image
+      shell: bash
+      run: |
+        docker run --platform="${{inputs.platform}}" \
+          -v "/var/run/docker.sock":"/var/run/docker.sock" \
+          -v "${{github.workspace}}":/source \
+          --env INPUT_DISTRIBUTION \
+          --env INPUT_DIST \
+          --env INPUT_PLATFORM \
+          --env INPUT_BUILDROOT \
+          --env INPUT_OUTPUT_DIR \
+          --env INPUT_GPG_KEY_NAME \
+          --env INPUT_GPG_KEY_FILE \
+          --workdir /source "${IMAGE_NAME}"
+      working-directory: ${{github.workspace}}
+      env:
+        INPUT_DISTRIBUTION: "${{inputs.distro}}"
+        INPUT_DIST: "${{inputs.distro_version}}"
+        INPUT_PLATFORM: "${{inputs.platform}}"
+        INPUT_BUILDROOT: "${{github.workspace}}/build"
+        INPUT_OUTPUT_DIR: "${{github.workspace}}/${{inputs.output_dir}}"
+        INPUT_GPG_KEY_NAME: "${{inputs.gpg_name}}"
+        INPUT_GPG_KEY_FILE: "${{inputs.gpg_private_key_file}}"
+        IMAGE_NAME: "${{ DOCKERHUB_USERNAME }}/${{inputs.distro}}-${{inputs.dist}}-${{inputs.platform}}"
