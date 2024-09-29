@@ -1,14 +1,12 @@
 # syntax=docker/dockerfile:1
 # see https://docs.docker.com/engine/reference/builder/#understand-how-arg-and-from-interact
-ARG DIST=latest
-ARG DISTRIBUTION=ubuntu
+ARG DISTRIBUTION=ubuntu:latest
 ARG PLATFORM=amd64
 
-FROM --platform=linux/${PLATFORM} ${DISTRIBUTION}:${DIST}
+FROM --platform=linux/${PLATFORM} ${DISTRIBUTION}
 
 # set the environment variables that gha sets
 ENV INPUT_DISTRIBUTION="${DISTRIBUTION}"
-ENV INPUT_DIST="${DIST}"
 ENV INPUT_PLATFORM="${PLATFORM}"
 ENV INPUT_RESULT_DIR="artifacts"
 
