@@ -7,9 +7,11 @@ branding:
 
 inputs:
   distro:
-    description: 'Name of the GNU/Linux distribution, i.e. `ubuntu` (default) or `debian`, with the distro version or code name.'
+    description: 'Name of the GNU/Linux distribution, i.e. `ubuntu` or `debian`.'
     required: true
-    default: 'ubuntu:latest'
+  distro_version:
+    description: 'Version number or name of the GNU/Linux distribution'
+    required: true
   platform:
     description: 'Platform name, i.e. `amd64` (default) or `i386`.'
     required: false
@@ -30,7 +32,11 @@ inputs:
     description: 'Provides the directory name where built packages should be placed.'
     required: true
     default: 'artifacts'
-  gpg_name:
+  gpg_key_name:
+    description: 'GPG pretty name of the key'
+    required: false
+    default: ''
+  gpg_key_id:
     description: 'GPG pretty name of the key'
     required: true
   gpg_private_key_file:
@@ -44,71 +50,82 @@ runs:
     - name: Verify inputs
       shell: bash
       run: |
-        grep -E '^(ubuntu|debian):' <<< "${{ inputs.distro }}"
+        grep -qE '^(ubuntu|debian)$' <<< "${{ inputs.distro }}"
         if [ $? -ne 0 ]
         then
-          echo "::error::Distribution must be either debian or ubuntu."
+          echo '::error::Distribution must be either debian or ubuntu.'
           exit 1
         fi
 
-        echo '${{inpus.source_repo_location}}' | grep -i '^[a-z0-9_.-]+$'
+        grep -qEi '^[a-z0-9_.-]+/?$' <<< '${{inputs.source_repo_location}}'
         if [ $? -ne 0 ]
         then
-          echo "::error::Illegal character(s) detected in `source_repo_location`."
+          echo '::error::Illegal character(s) detected in `source_repo_location`.'
           exit 1
         fi
 
-        echo '${{inputs.build_material_dir}}' | grep -i '^[a-z0-9_.-]+$'
+        grep -qEi '^[a-z0-9_.-]+/?$' <<< '${{inputs.build_material_dir}}'
         if [ $? -ne 0 ]
         then
-          echo "::error::Illegal character(s) detected in `build_material_dir`."
+          echo '::error::Illegal character(s) detected in `build_material_dir`.'
           exit 1
         fi
 
-        echo '${{inputs.output_dir}}' | grep -i '^[a-z0-9_.-]+$'
+        grep -qEi '^[a-z0-9_.-]+/?$' <<< '${{inputs.output_dir}}'
         if [ $? -ne 0 ]
         then
-          echo "::error::Illegal character(s) detected in `output_dir`."
+          echo '::error::Illegal character(s) detected in `output_dir`.'
           exit 1
         fi
 
     - name: Prepare package build workspace
       shell: bash
       run: |
-        SOURCE_DIR="$(readlink -f "${{inputs.source_repo_location}}")"
+        SOURCE_DIR="${{github.workspace}}/${{inputs.source_repo_location}}"
+        SOURCE_DIR_docker="/source/${{inputs.source_repo_location}}"
+        DATE=$( date -R )
 
-        if [[ "$SOURCE_DIR" != "${{github.workspace}}"* ]]
+        if [ ! -d "${SOURCE_DIR}" ]
         then
-          echo "::error::`source_dir` (${INPUTS_SOURCE_DIR}) has to be a subdirectory of the current workdir!"
+          echo "::error::'source_dir' (${SOURCE_DIR}) has to be a subdirectory of the current workdir !"
           exit 2
         fi
 
-        for package in ${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/*
-        do
-          SOURCE_PKG_DIR=${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/${package}
-          BUILDDIR=${{github.workspace}}/build/${package}-${INPUT_PKG_VERSION}
+        if [ -d "${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}" ]
+        then
+          echo "::debug:: Inspecting content of '${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}'."
+          for package in ${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/*
+          do
+            package=$( basename ${package} )
+            SOURCE_PKG_DIR=${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}/${package}
+            BUILDDIR=${{github.workspace}}/build/${package}-${INPUT_PKG_VERSION}
+            BUILDDIR_docker=/source/build/${package}-${INPUT_PKG_VERSION}
 
-          if [ -d "${SOURCE_PKG_DIR}" -a -f "${SOURCE_PKG_DIR}/control" ]
-          then
-            if [ -d "${SOURCE_DIR}/${INPUT_BUILD_MATERIAL_DIR}" ]
+            if [ -d "${SOURCE_PKG_DIR}" -a -f "${SOURCE_PKG_DIR}/control" ]
             then
+              echo "::notice:: Found a control file in '${package}' subdirectory."
               if [ -f ${SOURCE_PKG_DIR}/Makefile ]
               then
                 mkdir -m 0755 -p ${BUILDDIR}/debian ${{github.workspace}}/${INPUT_RESULT_DIR}
 
-                sed -e "s/%version%/${VERSION}/g" \
+                sed -e "s/%version%/${INPUT_PKG_VERSION}/g" \
                   -e "s/%name%/${package}/g" \
-                  -e "s:%sourcedir%:${SOURCE_DIR}:g" \
-                  -e "s:%builddir%:${BUILDDIR}:g" \
+                  -e "s:%sourcedir%:${SOURCE_DIR_docker}:g" \
+                  -e "s:%builddir%:${BUILDDIR_docker}:g" \
                   ${SOURCE_PKG_DIR}/Makefile > ${BUILDDIR}/Makefile
 
-                sed -e "s/%version%/${VERSION}/g" \
+                sed -e "s/%version%/${INPUT_PKG_VERSION}/g" \
                   -e "s/%name%/${package}/g" \
-                  -e "s:%sourcedir%:${SOURCE_DIR}:g" \
-                  -e "s:%builddir%:${BUILDDIR}:g" \
+                  -e "s:%sourcedir%:${SOURCE_DIR_docker}:g" \
+                  -e "s:%builddir%:${BUILDDIR_docker}:g" \
                   ${SOURCE_PKG_DIR}/control > ${BUILDDIR}/debian/control
 
-                for file in preinst postinst prerm postrm rules changelog
+                sed -e "s/%version%/${INPUT_PKG_VERSION}/g" \
+                  -e "s/%name%/${package}/g" \
+                  -e "s/%date%/${DATE}/g" \
+                  ${SOURCE_PKG_DIR}/changelog > ${BUILDDIR}/debian/changelog
+
+                for file in preinst postinst prerm postrm rules
                 do
                   if [ -f ${SOURCE_PKG_DIR}/$file ]
                   then
@@ -117,37 +134,25 @@ runs:
                   fi
                 done
               else
-                echo "::error::Makefile not found for package `${package}`."
+                echo "::error::Makefile not found for package '${package}'."
                 exit 2
               fi
             else
-              echo "::error::`build_material_dir` does not exist in the source repository."
-              exit 2
+              if [ -d "${SOURCE_PKG_DIR}" ]
+              then
+                echo "::notice::Subdirectory '${package}' ignored: no control file found."
+              fi
             fi
-          else
-            if [ -d "${SOURCE_PKG_DIR}" ]
-            then
-              echo "::notice::subdirectory ${package} ignored: no control file found."
-            fi
-          fi
-        done
+          done
+        else
+          echo "::error::'build_material_dir' does not exist in the source repository."
+          exit 2
+        fi
       working-directory: ${{github.workspace}}
       env:
         INPUT_BUILD_MATERIAL_DIR: "${{inputs.build_material_dir}}"
         INPUT_PKG_VERSION: "${{inputs.package_version}}"
         INPUT_RESULT_DIR: "${{inputs.result_dir}}"
-
-    - name: Format Docker image tag
-      id: format_image_tag
-      shell: bash
-      run: |
-        sed -e 's/^\([^:]*\):\(.*\)$/image_tag=\1-\2-${{ inputs.platform }}:latest' <<< "${{ inputs.distro }}" >> ${GITHUB.OUTPUT}
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ vars.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -155,14 +160,16 @@ runs:
     - name: Build Docker image
       uses: docker/build-push-action@v6
       with:
+        context: ${{github.action_path}}
         push: false
-        tags: ${{ vars.DOCKERHUB_USERNAME }}/${{ needs.format_image_tag.outputs.image_tag }}
+        tags: LHQG/${{ inputs.distro }}-${{ inputs.distro_version }}-${{ inputs.platform }}:latest
         cache-from: type=gha
         cache-to: type=gha
         outputs: type=docker
         platforms: ${{inputs.platform}}
         build-args: |
-          DISTRIBUTION: "${{inputs.distro}}"
+          DISTRIBUTION=${{inputs.distro}}
+          DISTRO_VERSN=${{inputs.distro_version}}
           PLATFORM=${{inputs.platform}}
 
     - name: Build DEB package in docker image
@@ -171,19 +178,19 @@ runs:
         docker run --platform="${{inputs.platform}}" \
           -v "/var/run/docker.sock":"/var/run/docker.sock" \
           -v "${{github.workspace}}":/source \
-          --env INPUT_DISTRIBUTION \
-          --env INPUT_PLATFORM \
           --env INPUT_BUILDROOT \
           --env INPUT_OUTPUT_DIR \
-          --env INPUT_GPG_KEY_NAME \
-          --env INPUT_GPG_KEY_FILE \
+          --env INPUT_PKG_VERSION \
+          --env INPUT_SIGNING_KEY_NAME \
+          --env INPUT_SIGNING_KEY_ID \
+          --env INPUT_SIGNING_KEY_FILE \
           --workdir /source "${IMAGE_NAME}"
       working-directory: ${{github.workspace}}
       env:
-        INPUT_DISTRIBUTION: "${{inputs.distro}}"
-        INPUT_PLATFORM: "${{inputs.platform}}"
-        INPUT_BUILDROOT: "${{github.workspace}}/build"
-        INPUT_OUTPUT_DIR: "${{github.workspace}}/${{inputs.output_dir}}"
-        INPUT_GPG_KEY_NAME: "${{inputs.gpg_name}}"
-        INPUT_GPG_KEY_FILE: "${{inputs.gpg_private_key_file}}"
-        IMAGE_NAME: "${{ DOCKERHUB_USERNAME }}/${{inputs.distro}}-${{inputs.dist}}-${{inputs.platform}}"
+        INPUT_BUILDROOT: build
+        INPUT_OUTPUT_DIR: "${{inputs.output_dir}}"
+        INPUT_PKG_VERSION: "${{inputs.package_version}}"
+        INPUT_SIGNING_KEY_NAME: "${{inputs.gpg_key_name}}"
+        INPUT_SIGNING_KEY_ID: "${{inputs.gpg_key_id}}"
+        INPUT_SIGNING_KEY_FILE: "${{inputs.gpg_private_key_file}}"
+        IMAGE_NAME: "LHQG/${{ inputs.distro }}-${{ inputs.distro_version }}-${{ inputs.platform }}:latest"
