@@ -42,7 +42,7 @@ then
 
   # Check that at least one CONTROL file exists
   ls ${BUILDROOT}/*/debian/control > /dev/null 2>&1
-  RC=$(($RC + $? ))
+  RC=$(( $RC + $? ))
 
   old_pwd=$( pwd )
   export GPG_TTY=$(tty)
@@ -73,7 +73,7 @@ then
       cd ${package_dir}
       dpkg-buildpackage -v${PACKAGE_VERSION} --jobs=1 --build=binary ${sign_options}
       rc2=$?
-      RC=$(($RC + $rc2 ))
+      RC=$(( $RC + $rc2 ))
 
       if [ $rc2 -eq 0 ]
       then
@@ -82,7 +82,7 @@ then
 
         echo "::notice title:DEBbuild:Moving files to ${OUTPUT_DIR}"
         mv ${BUILDROOT}/*.deb ${OUTPUT_DIR}/
-        RC=$(($RC + $? ))
+        RC=$(( $RC + $? ))
 
         mv ${BUILDROOT}/*.{changes,dsc} ${OUTPUT_DIR}/
       fi
@@ -95,11 +95,17 @@ then
     then
       cd ${OUTPUT_DIR}
       . /etc/os-release
+      [ -d ${OUTPUT_DIR}/${ID} ] || mkdir -m 0755 ${OUTPUT_DIR}/${ID} 
+      [ -d ${OUTPUT_DIR}/${ID}/${VERSION_CODENAME} ] || mkdir -m 0755 ${OUTPUT_DIR}/${ID}/${VERSION_CODENAME}
+
       find . -type f -a \
         \( -name '*.deb' -o -name '*.changes' -o -name '*.buildinfo' \) \
         -print0 | xargs -0 \
-        tar cfj ${OUTPUT_DIR}/${ID}-${VERSION_ID}.tar.bz2
-      RC=$(($RC + $? ))
+        tar cfj ${OUTPUT_DIR}/${ID}-${VERSION_CODENAME}.${VERSION_ID}.tar.bz2
+      RC=$(( $RC + $? ))
+
+      find . -type f -name '*.deb' -print0 | xargs -0 cp -f --target-directory=${OUTPUT_DIR}/${ID}/${VERSION_CODENAME}/
+      RC=$(( $RC + $? ))
     fi
   else
     echo "::error title=DEBbuild::Could not find any CONTROL file in ${BUILDROOT}/*/debian/ directories"
