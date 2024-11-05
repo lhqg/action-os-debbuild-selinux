@@ -95,8 +95,9 @@ then
     then
       cd ${OUTPUT_DIR}
       . /etc/os-release
-      [ -d ${OUTPUT_DIR}/${ID} ] || mkdir -m 0755 ${OUTPUT_DIR}/${ID} 
-      [ -d ${OUTPUT_DIR}/${ID}/${VERSION_CODENAME} ] || mkdir -m 0755 ${OUTPUT_DIR}/${ID}/${VERSION_CODENAME}
+
+      [ -d ${OUTPUT_DIR}/${ID}/pool/${VERSION_CODENAME}/main ] || mkdir -p -m 0755 ${OUTPUT_DIR}/${ID}/pool/${VERSION_CODENAME}/main
+      [ -d ${OUTPUT_DIR}/${ID}/dists/${VERSION_CODENAME} ] || mkdir -p -m 0755 ${OUTPUT_DIR}/${ID}/dists/${VERSION_CODENAME}
 
       find . -type f -a \
         \( -name '*.deb' -o -name '*.changes' -o -name '*.buildinfo' \) \
@@ -104,7 +105,8 @@ then
         tar cfj ${OUTPUT_DIR}/${ID}-${VERSION_CODENAME}.${VERSION_ID}.tar.bz2
       RC=$(( $RC + $? ))
 
-      find . -type f -name '*.deb' -print0 | xargs -0 cp -f --target-directory=${OUTPUT_DIR}/${ID}/${VERSION_CODENAME}/
+      find . -type f -name '*.dsc' -print0 | xargs -0 cp -f --target-directory=${OUTPUT_DIR}/${ID}/pool/${VERSION_CODENAME}/main/
+      find . -type f -name '*.deb' -print0 | xargs -0 cp -f --target-directory=${OUTPUT_DIR}/${ID}/pool/${VERSION_CODENAME}/main/
       RC=$(( $RC + $? ))
     fi
   else
